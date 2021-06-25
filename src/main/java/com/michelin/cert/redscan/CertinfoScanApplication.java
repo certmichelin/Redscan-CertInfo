@@ -1,29 +1,47 @@
-/**
- * Michelin CERT 2020.
+/*
+ * Copyright 2021 Michelin CERT (https://cert.michelin.com/)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
-
 
 package com.michelin.cert.redscan;
 
+import com.michelin.cert.redscan.utils.PermissiveHostVerifier;
+import com.michelin.cert.redscan.utils.PermissiveTrustManager;
 import com.michelin.cert.redscan.utils.datalake.DatalakeStorageException;
-import com.michelin.cert.redscan.utils.models.Alert;
 import com.michelin.cert.redscan.utils.models.HttpService;
+import com.michelin.cert.redscan.utils.models.Severity;
+import com.michelin.cert.redscan.utils.models.Vulnerability;
+
 import java.io.IOException;
+import java.net.MalformedURLException;
 import java.net.URL;
-import java.security.GeneralSecurityException;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
-import java.util.Calendar;
+import java.text.DateFormat;
 import java.util.Date;
-import javax.net.ssl.HostnameVerifier;
+import java.util.Locale;
+
+import javax.annotation.PostConstruct;
 import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.KeyManager;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.TrustManager;
+
 import org.apache.logging.log4j.LogManager;
+
 import org.json.JSONObject;
 
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -32,22 +50,21 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-
 /**
  * RedScan scanner main class.
  *
  * @author Maxime ESCOURBIAC
  * @author Sylvain VAISSIER
- * @author Maxence SCHMITT
  */
 @SpringBootApplication
 public class CertinfoScanApplication {
 
-  //Only required if pushing data to queues
   private final RabbitTemplate rabbitTemplate;
 
   @Autowired
   private DatalakeConfig datalakeConfig;
+
+  private SSLContext sslCtx;
 
   /**
    * Constructor to init rabbit template. Only required if pushing data to queues
@@ -57,8 +74,23 @@ public class CertinfoScanApplication {
   public CertinfoScanApplication(RabbitTemplate rabbitTemplate) {
     this.rabbitTemplate = rabbitTemplate;
   }
-  
-  
+
+  /**
+   * Init the SSL configuration.
+   */
+  @PostConstruct
+  public void initSsl() {
+    try {
+      sslCtx = SSLContext.getInstance("TLS");
+      sslCtx.init(null, new TrustManager[]{new PermissiveTrustManager()}, new java.security.SecureRandom());
+      HttpsURLConnection.setDefaultSSLSocketFactory(sslCtx.getSocketFactory());
+      
+      HttpsURLConnection.setDefaultHostnameVerifier(new PermissiveHostVerifier());
+    } catch (KeyManagementException | NoSuchAlgorithmException ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Init SSL error : %s", ex.getMessage()));
+    }
+  }
+
   /**
    * RedScan Main methods.
    *
@@ -69,50 +101,6 @@ public class CertinfoScanApplication {
   }
 
   /**
-   * Check if the certificate authority and certificate owner are the same = Selfsigned.
-   * @param certificate the X509 Certficates
-   * @return boolean The certificate is selfsigned or not.
-   */
-  private boolean isSelfSigned(X509Certificate certificate) {
-    try {
-      certificate.verify(certificate.getPublicKey());
-      return true;
-    } catch (GeneralSecurityException e) {
-      return false;
-    }
-  }
-  /**
-  * Extract Cerficates datas and stores it in a JSONObject.
-  * @param cert The X509 certificate.
-  * @param httpMessage the original RabbitMessage for retrieving url
-  * @return obj JSON formated object
-  */
-  public JSONObject extractDatas(X509Certificate cert, HttpService httpMessage) {
-    JSONObject obj = new JSONObject();
-    obj.put("isSelfSigned", isSelfSigned(cert));
-    obj.put("Deliver to",cert.getSubjectDN().getName());
-    obj.put("Issuer", cert.getIssuerDN().getName());
-    obj.put("Cipher", cert.getSigAlgName());
-    Date notAfter = cert.getNotAfter();
-    checkDate(notAfter,httpMessage.toUrl());
-    obj.put("notAfter", notAfter.toString());
-    return obj;
-    
-  }
-  /**
-   * Check Date validity and send alert accordingly.
-   * @param date the notAfter expiry date of the certificate.
-   * @param url The url of the domain
-   */
-  public void checkDate(Date date, String url) {
-    Date today = Calendar.getInstance().getTime();
-    if (date.before(today)) {
-      Alert alert = new Alert(3, "Selfsigned Certficate", "Certificate is self signed", url, "Certinfo");
-      rabbitTemplate.convertAndSend(RabbitMqConfig.FANOUT_ALERTS_EXCHANGE_NAME, "", alert.toJson());
-    }
-    
-  }
-  /**
    * Message executor.
    *
    * @param message Message received.
@@ -121,40 +109,89 @@ public class CertinfoScanApplication {
   public void receiveMessage(String message) {
     HttpService httpMessage = new HttpService(message);
     if (httpMessage.isSsl()) {
-      LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Retrieving certificate information on: %s", httpMessage.getDomain()));
-      try {
-        // Creating custom ssl context for retrieving certificate info on selfsigned certificate
-        SSLContext ctx = SSLContext.getInstance("TLS");
-        ctx.init(new KeyManager[0], new TrustManager[]{new PermissiveTrustManager()}, new SecureRandom());
-        SSLContext.setDefault(ctx);
-        URL url = new URL(httpMessage.toUrl());
-        HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
-        // Creating Custom Hostname verifier for accepting Unknwow Certificate Authority (like selfsigned)
-        HostnameVerifier hostCheck = new PermissiveHostnameVerifier();
-        conn.setHostnameVerifier(hostCheck);
-        LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Connecting..."));
-        conn.connect();
-        LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Retrieving certificates...."));
-        // First certificate is the principal, followed by Certificates Authorities.
-        Certificate cert = conn.getServerCertificates()[0];
-        if ((cert instanceof X509Certificate)) {
-          LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate is %s", cert.toString()));
-          X509Certificate xcert = (X509Certificate) cert;
-          LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Extracting datas"));
-          JSONObject result = extractDatas(xcert,httpMessage);
-          LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Upserting data %s", result));
-          datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), "Certinfo", result);
+      LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Retrieving certificate information on: %s", httpMessage.toUrl()));
+      X509Certificate certificate = extractCertificate(httpMessage);
+      if (certificate != null) {
+        JSONObject extract = extractInformation(certificate, httpMessage);
+        try {
+          datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), "certinfo", extract);
+        } catch (DatalakeStorageException ex) {
+          LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
         }
-
-      } catch (IOException | NoSuchAlgorithmException | KeyManagementException | DatalakeStorageException ex) {
-        LogManager.getLogger(CertinfoScanApplication.class).error(String.format("%s EXCEPTION : %s",ex.getClass(), ex.toString()));
+      } else {
+        LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("SSLCertificate was not retrieved for %s : ", httpMessage.toUrl()));
       }
-    } else {
-      LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("%s is not SSL", httpMessage.getDomain()));
     }
-    
-    
+  }
+
+  private X509Certificate extractCertificate(HttpService service) {
+    X509Certificate certificate = null;
+    try {
+      URL url = new URL(service.toUrl());
+      HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
+      conn.connect();
+      Certificate cert = conn.getServerCertificates()[0];
+      certificate = (cert instanceof X509Certificate) ? (X509Certificate) cert : null;
+    } catch (MalformedURLException ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Url %s  was malformed", service.toUrl()));
+    } catch (SSLPeerUnverifiedException ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).error(String.format("SSL Peer unverified : %s", service.toUrl()));
+    } catch (IOException ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).error(String.format("IOException for %s : %s", service.toUrl(), ex.getMessage()));
+    } catch (Exception ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Exception for %s : %s", service.toUrl(), ex.getMessage()));
+    }
+    return certificate;
+  }
+
+  private JSONObject extractInformation(X509Certificate cert, HttpService service) {
+    JSONObject obj = new JSONObject();
+    obj.put("isSelfSigned", isSelfSigned(cert, service));
+    obj.put("isExpired", isExpired(cert, service));
+    obj.put("Deliver to", cert.getSubjectDN().getName());
+    obj.put("Issuer", cert.getIssuerDN().getName());
+    obj.put("Cipher", cert.getSigAlgName());
+    obj.put("notAfter", cert.getNotAfter());
+    return obj;
+  }
+
+  private boolean isSelfSigned(X509Certificate certificate, HttpService service) {
+    boolean isSelfSigned = false;
+    if (certificate.getSubjectDN() != null && certificate.getIssuerDN() != null && certificate.getSubjectDN().getName().equals(certificate.getIssuerDN().getName())) {
+      LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate on %s is self-signed", service.toUrl()));
+      raiseVulnerability(Severity.LOW, service, "self_signed_certificate",
+              String.format("Certificated used on %s is self-signed", service.toUrl()),
+              String.format("The certificate issuer : %s.", certificate.getIssuerDN().getName()));
+      isSelfSigned = true;
+    }
+    return isSelfSigned;
+  }
+
+  private boolean isExpired(X509Certificate certificate, HttpService service) {
+    boolean isExpired = false;
+    if (certificate.getNotAfter() != null && certificate.getNotAfter().before(new Date())) {
+      LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate on %s is expired", service.toUrl()));
+      DateFormat df = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM, new Locale("EN", "en"));
+      raiseVulnerability(Severity.LOW, service, "expired_certificate",
+              String.format("Expired certificated used on %s", service.toUrl()),
+              String.format("The certificate expired on %s.", df.format(certificate.getNotAfter())));
+
+      isExpired = true;
+    }
+    return isExpired;
+  }
+
+  private void raiseVulnerability(int severity, HttpService service, String vulnName, String title, String message) {
+    Vulnerability vuln = new Vulnerability(
+            Vulnerability.generateId("redscan-certinfo", String.format("%s%s", service.getDomain(), service.getPort()), vulnName),
+            severity,
+            title,
+            message,
+            service.toUrl(),
+            "redscan-certinfo"
+    );
+
+    rabbitTemplate.convertAndSend(RabbitMqConfig.FANOUT_VULNERABILITIES_EXCHANGE_NAME, "", vuln.toJson());
   }
 
 }
-

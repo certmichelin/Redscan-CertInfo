@@ -14,7 +14,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     
         <!-- Define dependencies versions -->
-        <redscan-utils.version>2.0.7</redscan-utils.version>
+        <redscan-utils.version>3.0.0</redscan-utils.version>
         <log4j-layout-template-json.version>2.14.0</log4j-layout-template-json.version>
 
         <!-- Define test dependencies versions -->
@@ -89,6 +89,24 @@
         <!-- Custom dependencies -->
         
         <!-- End of Custom dependencies -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.6.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
+            <version>5.6.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>5.6.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -111,6 +129,5 @@
             </plugin>
         </plugins>
     </build>
-    <name>Redscan-Certinfo</name>
 </project>
 
