@@ -84,7 +84,7 @@ public class CertinfoScanApplication {
       sslCtx = SSLContext.getInstance("TLS");
       sslCtx.init(null, new TrustManager[]{new PermissiveTrustManager()}, new java.security.SecureRandom());
       HttpsURLConnection.setDefaultSSLSocketFactory(sslCtx.getSocketFactory());
-      
+
       HttpsURLConnection.setDefaultHostnameVerifier(new PermissiveHostVerifier());
     } catch (KeyManagementException | NoSuchAlgorithmException ex) {
       LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Init SSL error : %s", ex.getMessage()));
@@ -113,10 +113,13 @@ public class CertinfoScanApplication {
       X509Certificate certificate = extractCertificate(httpMessage);
       if (certificate != null) {
         JSONObject extract = extractInformation(certificate, httpMessage);
-        try {
-          datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), "certinfo", extract);
-        } catch (DatalakeStorageException ex) {
-          LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
+        if (extract != null) {
+          LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate information on %s : %s", httpMessage.toUrl(), extract.toString()));
+          try {
+            datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), "certinfo", extract);
+          } catch (DatalakeStorageException ex) {
+            LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
+          }
         }
       } else {
         LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("SSLCertificate was not retrieved for %s : ", httpMessage.toUrl()));
