@@ -116,7 +116,7 @@ public class CertinfoScanApplication {
         if (extract != null) {
           LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate information on %s : %s", httpMessage.toUrl(), extract.toString()));
           try {
-            datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), "certinfo", extract);
+            datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), httpMessage.getProtocol(), "certinfo", extract);
           } catch (DatalakeStorageException ex) {
             LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
           }
