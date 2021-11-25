@@ -19,9 +19,9 @@ package com.michelin.cert.redscan;
 import com.michelin.cert.redscan.utils.PermissiveHostVerifier;
 import com.michelin.cert.redscan.utils.PermissiveTrustManager;
 import com.michelin.cert.redscan.utils.datalake.DatalakeStorageException;
-import com.michelin.cert.redscan.utils.models.HttpService;
-import com.michelin.cert.redscan.utils.models.Severity;
-import com.michelin.cert.redscan.utils.models.Vulnerability;
+import com.michelin.cert.redscan.utils.models.reports.Severity;
+import com.michelin.cert.redscan.utils.models.reports.Vulnerability;
+import com.michelin.cert.redscan.utils.models.services.HttpService;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -40,13 +40,12 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.TrustManager;
 
-import org.apache.logging.log4j.LogManager;
+import kong.unirest.json.JSONObject;
 
-import org.json.JSONObject;
+import org.apache.logging.log4j.LogManager;
 
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -60,9 +59,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class CertinfoScanApplication {
 
   private final RabbitTemplate rabbitTemplate;
-
-  @Autowired
-  private DatalakeConfig datalakeConfig;
 
   private SSLContext sslCtx;
 
@@ -107,23 +103,28 @@ public class CertinfoScanApplication {
    */
   @RabbitListener(queues = {RabbitMqConfig.QUEUE_HTTP_SERVICES})
   public void receiveMessage(String message) {
-    HttpService httpMessage = new HttpService(message);
-    if (httpMessage.isSsl()) {
-      LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Retrieving certificate information on: %s", httpMessage.toUrl()));
-      X509Certificate certificate = extractCertificate(httpMessage);
-      if (certificate != null) {
-        JSONObject extract = extractInformation(certificate, httpMessage);
-        if (extract != null) {
-          LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate information on %s : %s", httpMessage.toUrl(), extract.toString()));
-          try {
-            datalakeConfig.upsertHttpServiceField(httpMessage.getDomain(), httpMessage.getPort(), httpMessage.getProtocol(), "certinfo", extract);
-          } catch (DatalakeStorageException ex) {
-            LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
+    HttpService httpMessage = new HttpService();
+    try {
+      httpMessage.fromJson(message);
+      if (httpMessage.isSsl()) {
+        LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Retrieving certificate information on: %s", httpMessage.toUrl()));
+        X509Certificate certificate = extractCertificate(httpMessage);
+        if (certificate != null) {
+          JSONObject extract = extractInformation(certificate, httpMessage);
+          if (extract != null) {
+            LogManager.getLogger(CertinfoScanApplication.class).info(String.format("Certificate information on %s : %s", httpMessage.toUrl(), extract.toString()));
+            try {
+              httpMessage.upsertField("certinfo", extract);
+            } catch (DatalakeStorageException ex) {
+              LogManager.getLogger(CertinfoScanApplication.class).error(String.format("Datalake Strorage exception : %s", ex));
+            }
           }
+        } else {
+          LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("SSLCertificate was not retrieved for %s ", httpMessage.toUrl()));
         }
-      } else {
-        LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("SSLCertificate was not retrieved for %s : ", httpMessage.toUrl()));
       }
+    } catch (Exception ex) {
+      LogManager.getLogger(CertinfoScanApplication.class).warn(String.format("General Exception : %s", ex.getMessage()));
     }
   }
 
@@ -186,15 +187,14 @@ public class CertinfoScanApplication {
 
   private void raiseVulnerability(int severity, HttpService service, String vulnName, String title, String message) {
     Vulnerability vuln = new Vulnerability(
-            Vulnerability.generateId("redscan-certinfo", String.format("%s%s", service.getDomain(), service.getPort()), vulnName),
             severity,
+            vulnName,
             title,
             message,
             service.toUrl(),
-            "redscan-certinfo"
-    );
-
-    rabbitTemplate.convertAndSend(RabbitMqConfig.FANOUT_VULNERABILITIES_EXCHANGE_NAME, "", vuln.toJson());
+            String.format("%s%s", service.getDomain(), service.getPort()),
+            "redscan-certinfo");
+    rabbitTemplate.convertAndSend(vuln.getFanoutExchangeName(), "", vuln.toJson());
   }
 
 }
