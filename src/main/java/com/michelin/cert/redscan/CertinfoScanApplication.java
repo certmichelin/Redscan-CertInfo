@@ -19,6 +19,7 @@ package com.michelin.cert.redscan;
 import com.michelin.cert.redscan.utils.PermissiveHostVerifier;
 import com.michelin.cert.redscan.utils.PermissiveTrustManager;
 import com.michelin.cert.redscan.utils.datalake.DatalakeStorageException;
+import com.michelin.cert.redscan.utils.models.reports.CommonTags;
 import com.michelin.cert.redscan.utils.models.reports.Severity;
 import com.michelin.cert.redscan.utils.models.reports.Vulnerability;
 import com.michelin.cert.redscan.utils.models.services.HttpService;
@@ -187,13 +188,14 @@ public class CertinfoScanApplication {
 
   private void raiseVulnerability(int severity, HttpService service, String vulnName, String title, String message) {
     Vulnerability vuln = new Vulnerability(
+            Vulnerability.generateId("redscan-certinfo", vulnName, service.getDomain(),service.getPort()),
             severity,
-            vulnName,
             title,
             message,
             service.toUrl(),
-            String.format("%s%s", service.getDomain(), service.getPort()),
-            "redscan-certinfo");
+            "redscan-certinfo",
+            new String[]{CommonTags.COMPLIANCE, CommonTags.MISCONFIGURATION}
+    );
     rabbitTemplate.convertAndSend(vuln.getFanoutExchangeName(), "", vuln.toJson());
   }
 
